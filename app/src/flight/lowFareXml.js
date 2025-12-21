@@ -3,11 +3,11 @@ export const buildLowFareSearchXML = ({
   to,
   date,
   adults,
-  targetBranch
+  targetBranch,
 }) => `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-                  xmlns:air="http://www.travelport.com/schema/air_v42_0"
-                  xmlns:com="http://www.travelport.com/schema/common_v42_0">
+                  xmlns:air="http://www.travelport.com/schema/air_v54_0"
+                  xmlns:com="http://www.travelport.com/schema/common_v54_0">
   <soapenv:Header/>
   <soapenv:Body>
     <air:LowFareSearchReq
@@ -37,8 +37,8 @@ export const buildLowFareSearchXML = ({
       </air:AirSearchModifiers>
 
       ${Array.from({ length: adults })
-    .map(() => `<com:SearchPassenger Code="ADT"/>`)
-    .join("")}
+        .map(() => `<com:SearchPassenger Code="ADT"/>`)
+        .join("")}
 
       <!-- ✅ Price in PKR if allowed by PCC -->
       <air:AirPricingModifiers FaresIndicator="AllFares" CurrencyType="PKR"/>
