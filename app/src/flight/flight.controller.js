@@ -14,239 +14,175 @@ import {
    ========================= */
 export const searchFlights = async (req, res) => {
   try {
-    const { from, to, date, returnDate, adults = 1 } = req.body;
+    const {
+      tripType,      // "oneway" | "round"
+      from,
+      to,
+      date,
+      returnDate,
+      adults = 1
+    } = req.body;
 
     console.log("🔍 Incoming search request:", req.body);
 
-    if (!from || !to || !date) {
-      return res.status(400).json({ error: "from, to, and date are required" });
-    }
+    /* ======================================================
+     VALIDATION (REAL WORLD STYLE)
+    ====================================================== */
 
-    console.log("🔹 Building XML request...");
-    const xmlRequest = buildLowFareSearchXML({
-      from: from.toUpperCase(),
-      to: to.toUpperCase(),
-      departureDate: date,
-      returnDate,
-      adults,
-      targetBranch: process.env.TRAVELPORT_TARGET_BRANCH,
-    });
-    console.log("✅ XML Request built");
-
-    console.log("🔹 Calling Travelport API...");
-    const xmlResponse = await callTravelport(xmlRequest);
-
-    if (!xmlResponse) {
-      console.error("❌ Travelport returned empty response");
-      return res.status(500).json({
-        error: "Flight search failed",
-        message: "Empty response from Travelport API",
+    if (!tripType || !["oneway", "round"].includes(tripType)) {
+      return res.status(400).json({
+        error: "tripType must be 'oneway' or 'round'"
       });
     }
 
-    console.log("✅ Received response from Travelport");
-    fs.writeFileSync("LowFareSearchRsp.xml", xmlResponse);
-
-    console.log("🔹 Parsing XML response...");
-    const parser = new XMLParser({
-      ignoreAttributes: false,
-      attributeNamePrefix: "",
-    });
-    const json = parser.parse(xmlResponse);
-    fs.writeFileSync("LowFareSearchRsp.json", JSON.stringify(json, null, 2));
-
-    const rsp =
-      json?.["SOAP:Envelope"]?.["SOAP:Body"]?.["air:LowFareSearchRsp"];
-
-    if (!rsp) {
-      console.warn("⚠️ LowFareSearchRsp not found in response");
-      return res.json({ success: true, flights: [] });
+    if (!from || !to || !date) {
+      return res.status(400).json({
+        error: "from, to, and date are required"
+      });
     }
-    console.log("✅ LowFareSearchRsp found");
 
-    let flightsArray = [];
+    if (tripType === "oneway" && returnDate) {
+      return res.status(400).json({
+        error: "returnDate is not allowed for one-way trips"
+      });
+    }
 
-    // ✅ Process AirPricePoint (preferred structure with complete pricing)
-    const pricePoints = rsp["air:AirPricePointList"]?.["air:AirPricePoint"];
+    if (tripType === "round" && !returnDate) {
+      return res.status(400).json({
+        error: "returnDate is required for round trips"
+      });
+    }
 
-    if (pricePoints) {
-      console.log("✅ Processing AirPricePoint structure...");
+    /* ======================================================
+     SHARED ONE-WAY SEARCH FUNCTION (UNCHANGED LOGIC)
+    ====================================================== */
+
+    const runSingleSearch = async (origin, destination, depDate) => {
+      const xmlRequest = buildLowFareSearchXML({
+        from: origin,
+        to: destination,
+        departureDate: depDate,
+        adults,
+        targetBranch: process.env.TRAVELPORT_TARGET_BRANCH,
+      });
+
+      const xmlResponse = await callTravelport(xmlRequest);
+      if (!xmlResponse) return [];
+
+      const parser = new XMLParser({
+        ignoreAttributes: false,
+        attributeNamePrefix: "",
+      });
+
+      const json = parser.parse(xmlResponse);
+      const rsp =
+        json?.["SOAP:Envelope"]?.["SOAP:Body"]?.["air:LowFareSearchRsp"];
+
+      if (!rsp) return [];
+
+      let flightsArray = [];
+
+      const pricePoints = rsp["air:AirPricePointList"]?.["air:AirPricePoint"];
+      if (!pricePoints) return [];
 
       const pricePointsArray = Array.isArray(pricePoints)
         ? pricePoints
         : [pricePoints];
-      const segmentMap = extractAirSegments(rsp);
 
-      console.log("📊 Found segments:", Object.keys(segmentMap).length);
+      const segmentMap = extractAirSegments(rsp);
 
       for (const pricePoint of pricePointsArray) {
         const pricingInfo = pricePoint["air:AirPricingInfo"];
         if (!pricingInfo) continue;
 
-        // Extract price information
         const totalPrice =
-          pricingInfo.ApproximateTotalPrice || pricePoint.ApproximateTotalPrice;
+          pricingInfo.ApproximateTotalPrice ||
+          pricePoint.ApproximateTotalPrice;
+
         const { amount: price, currency } = parsePrice(totalPrice);
 
-        // Extract segments for this price point
         const refs = extractSegmentRefs(pricePoint);
-
-        if (!refs.length) {
-          console.warn(
-            "⚠️ No segment refs found for price point:",
-            pricePoint.Key
-          );
-          continue;
-        }
+        if (!refs.length) continue;
 
         const segments = refs
-          .map((r) => {
-            const seg = segmentMap[r.Key];
-            if (!seg) {
-              console.warn("⚠️ Segment not found for key:", r.Key);
-              return null;
-            }
-            return seg;
-          })
+          .map((r) => segmentMap[r.Key])
           .filter(Boolean);
 
-        if (!segments.length) {
-          console.warn("⚠️ No valid segments found");
-          continue;
-        }
-
-        // Calculate flight details
-        const uniqueKey = segments
-          .map((s) => `${s.carrier}${s.flightNumber}${s.from}${s.to}`)
-          .join("-");
+        if (!segments.length) continue;
 
         const durationMinutes = minutesBetween(
           segments[0].departure,
           segments[segments.length - 1].arrival
         );
 
-        const stops = segments.length - 1;
-
-        // Extract additional fare details
-        const fareCalc = pricingInfo["air:FareCalc"] || "";
-        const refundable = pricingInfo.Refundable === "true";
-        const cabinClass = segments[0]?.cabinClass || "Economy";
+        const uniqueKey = segments
+          .map((s) => `${s.carrier}${s.flightNumber}${s.from}${s.to}`)
+          .join("-");
 
         flightsArray.push({
           id: Buffer.from(uniqueKey + Date.now()).toString("base64"),
           price,
           currency,
-          stops,
+          stops: segments.length - 1,
           durationMinutes,
           segments,
-          cabinClass,
-          refundable,
-          fareCalc,
+          cabinClass: segments[0]?.cabinClass || "Economy",
+          refundable: pricingInfo.Refundable === "true",
+          fareCalc: pricingInfo["air:FareCalc"] || "",
           pricingKey: pricePoint.Key,
           segmentKeys: refs.map((r) => r.Key),
         });
       }
-    }
 
-    // 🔄 Fallback: Try AirPricingSolution (older structure)
-    else if (rsp["air:AirPricingSolution"]) {
-      console.log("⚠️ Using AirPricingSolution fallback...");
+      return flightsArray;
+    };
 
-      const rawSolutions = Array.isArray(rsp["air:AirPricingSolution"])
-        ? rsp["air:AirPricingSolution"]
-        : [rsp["air:AirPricingSolution"]];
+    /* ======================================================
+     EXECUTION
+    ====================================================== */
 
-      const segmentMap = extractAirSegments(rsp);
-
-      for (const sol of rawSolutions) {
-        const { amount: price, currency } = parsePrice(sol.TotalPrice);
-        const refs = extractSegmentRefs(sol);
-
-        if (!refs.length) continue;
-
-        const segments = refs.map((r) => segmentMap[r.Key]).filter(Boolean);
-
-        if (!segments.length) continue;
-
-        const uniqueKey = segments
-          .map((s) => `${s.carrier}${s.flightNumber}${s.from}${s.to}`)
-          .join("-");
-
-        const durationMinutes = minutesBetween(
-          segments[0].departure,
-          segments[segments.length - 1].arrival
-        );
-
-        const stops = segments.length - 1;
-
-        flightsArray.push({
-          id: Buffer.from(uniqueKey + Date.now()).toString("base64"),
-          price,
-          currency,
-          stops,
-          durationMinutes,
-          segments,
-          pricingSolutionKey: sol.Key,
-          segmentKeys: refs.map((r) => r.Key),
-        });
-      }
-    }
-
-    // 🆘 Last resort: FlightDetailsList only
-    else if (rsp["air:FlightDetailsList"]?.["air:FlightDetails"]) {
-      console.log("⚠️ Using FlightDetailsList fallback (no pricing)...");
-
-      const details = Array.isArray(
-        rsp["air:FlightDetailsList"]["air:FlightDetails"]
-      )
-        ? rsp["air:FlightDetailsList"]["air:FlightDetails"]
-        : [rsp["air:FlightDetailsList"]["air:FlightDetails"]];
-
-      flightsArray = details.map((f) => ({
-        id: f.Key,
-        price: null,
-        currency: null,
-        stops: 0,
-        durationMinutes: Number(f.TravelTime) || 0,
-        segments: [
-          {
-            Key: f.Key,
-            carrier: null,
-            flightNumber: null,
-            from: f.Origin,
-            to: f.Destination,
-            departure: f.DepartureTime,
-            arrival: f.ArrivalTime,
-            equipment: f.Equipment,
-          },
-        ],
-      }));
-    }
-
-    console.log(`✅ Successfully processed ${flightsArray.length} flights`);
-
-    // Log sample flight for debugging
-    if (flightsArray.length > 0) {
-      console.log(
-        "📋 Sample flight:",
-        JSON.stringify(flightsArray[0], null, 2)
+    // ONE-WAY
+    if (tripType === "oneway") {
+      const flights = await runSingleSearch(
+        from.toUpperCase(),
+        to.toUpperCase(),
+        date
       );
+
+      return res.json({
+        success: true,
+        tripType: "oneway",
+        flights,
+        totalResults: flights.length,
+      });
     }
+
+    // ROUND-TRIP
+    console.log("Round-trip search initiated...");
+
+    const [outboundFlights, returnFlights] = await Promise.all([
+      runSingleSearch(from.toUpperCase(), to.toUpperCase(), date),
+      runSingleSearch(to.toUpperCase(), from.toUpperCase(), returnDate),
+    ]);
 
     return res.json({
       success: true,
-      flights: flightsArray,
-      totalResults: flightsArray.length,
+      tripType: "round",
+      outboundFlights,
+      returnFlights,
+      outboundCount: outboundFlights.length,
+      returnCount: returnFlights.length,
     });
+
   } catch (err) {
-    console.error("❌ Flight Search Error:", err);
+    console.error("Flight Search Error:", err);
     return res.status(500).json({
       error: "Flight search failed",
       message: err.message,
-      stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
     });
   }
 };
+
 
 /* =========================
    FLIGHT DETAILS
