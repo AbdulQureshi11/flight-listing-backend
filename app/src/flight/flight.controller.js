@@ -3,495 +3,132 @@ import fs from "fs";
 import { buildLowFareSearchXML } from "./lowFareXml.js";
 import { callTravelport } from "./travelport.service.js";
 import {
+  parseXMLToJSON,
   extractAirSegments,
-  extractSegmentRefs,
-  minutesBetween,
-  parsePrice,
-} from "../utils/helper.js";
+  extractFareInfo,
+  extractAmenities,
+  extractBrands,
+  processPricePoint,
+} from "../utils/ParseHelper.js";
 
-/* =========================
-   SEARCH FLIGHTS
-   ========================= */
 export const searchFlights = async (req, res) => {
   try {
     const {
-      tripType,      // "oneway" | "round"
+      tripType,
       from,
       to,
       date,
       returnDate,
-      adults = 1
+      segments,
+      travelers = { adults: 1, child: 0, infant: 0 },
+      travelClass = "Economy",
     } = req.body;
 
-    console.log("🔍 Incoming search request:", req.body);
-
-    /* ======================================================
-     VALIDATION (REAL WORLD STYLE)
-    ====================================================== */
-
-    if (!tripType || !["oneway", "round"].includes(tripType)) {
-      return res.status(400).json({
-        error: "tripType must be 'oneway' or 'round'"
-      });
+    // ================= 1. VALIDATION =================
+    if (!tripType || !["oneway", "round", "multi"].includes(tripType)) {
+      return res.status(400).json({ error: "Invalid tripType" });
     }
 
-    if (!from || !to || !date) {
-      return res.status(400).json({
-        error: "from, to, and date are required"
-      });
+    // Prepare arguments for the XML Builder
+    let builderArgs = {
+      adults: travelers.adults,
+      children: travelers.child,
+      infants: travelers.infant,
+      cabinClass: travelClass,
+      targetBranch: process.env.TRAVELPORT_TARGET_BRANCH,
+    };
+
+    if (tripType === "multi") {
+      if (!segments || !Array.isArray(segments) || segments.length < 2) {
+        return res
+          .status(400)
+          .json({ error: "Multi-city requires at least 2 segments" });
+      }
+      // Pass ONLY the segments array for multi-city
+      builderArgs.segments = segments.map((seg) => ({
+        from: seg.from.toUpperCase(),
+        to: seg.to.toUpperCase(),
+        date: seg.date,
+      }));
+    } else {
+      if (!from || !to || !date) {
+        return res.status(400).json({ error: "from, to, and date required" });
+      }
+      // Pass individual fields for oneway/round
+      builderArgs.from = from.toUpperCase();
+      builderArgs.to = to.toUpperCase();
+      builderArgs.departureDate = date; // Match builder's expected key
+
+      if (tripType === "round") {
+        if (!returnDate)
+          return res.status(400).json({ error: "returnDate required" });
+        builderArgs.returnDate = returnDate;
+      }
     }
 
-    if (tripType === "oneway" && returnDate) {
-      return res.status(400).json({
-        error: "returnDate is not allowed for one-way trips"
-      });
-    }
-
-    if (tripType === "round" && !returnDate) {
-      return res.status(400).json({
-        error: "returnDate is required for round trips"
-      });
-    }
-
-    /* ======================================================
-     SHARED ONE-WAY SEARCH FUNCTION (UNCHANGED LOGIC)
-    ====================================================== */
-
-    const runSingleSearch = async (origin, destination, depDate) => {
-      const xmlRequest = buildLowFareSearchXML({
-        from: origin,
-        to: destination,
-        departureDate: depDate,
-        adults,
-        targetBranch: process.env.TRAVELPORT_TARGET_BRANCH,
-      });
+    // ================= 2. SHARED SEARCH & PARSE LOGIC =================
+    const processGdsSearch = async (args) => {
+      // Call builder with prepared arguments
+      const xmlRequest = buildLowFareSearchXML(args);
 
       const xmlResponse = await callTravelport(xmlRequest);
-      if (!xmlResponse) return [];
+      fs.writeFileSync("search.xml", xmlResponse);
+      if (!xmlResponse) return null;
 
-      const parser = new XMLParser({
-        ignoreAttributes: false,
-        attributeNamePrefix: "",
-      });
-
-      const json = parser.parse(xmlResponse);
+      const json = parseXMLToJSON(xmlResponse);
       const rsp =
         json?.["SOAP:Envelope"]?.["SOAP:Body"]?.["air:LowFareSearchRsp"];
 
-      if (!rsp) return [];
-
-      let flightsArray = [];
-
-      const pricePoints = rsp["air:AirPricePointList"]?.["air:AirPricePoint"];
-      if (!pricePoints) return [];
-
-      const pricePointsArray = Array.isArray(pricePoints)
-        ? pricePoints
-        : [pricePoints];
+      if (!rsp) return null;
 
       const segmentMap = extractAirSegments(rsp);
+      const fareInfoMap = extractFareInfo(rsp);
+      const amenitiesMap = extractAmenities(rsp);
+      const brandMap = extractBrands(rsp);
 
-      for (const pricePoint of pricePointsArray) {
-        const pricingInfo = pricePoint["air:AirPricingInfo"];
-        if (!pricingInfo) continue;
+      let pricePoints = rsp["air:AirPricePointList"]?.["air:AirPricePoint"];
+      if (!pricePoints) return [];
 
-        const totalPrice =
-          pricingInfo.ApproximateTotalPrice ||
-          pricePoint.ApproximateTotalPrice;
+      pricePoints = Array.isArray(pricePoints) ? pricePoints : [pricePoints];
 
-        const { amount: price, currency } = parsePrice(totalPrice);
+      const flights = pricePoints
+        .map((pp) =>
+          processPricePoint(pp, segmentMap, fareInfoMap, amenitiesMap, brandMap)
+        )
+        .filter(Boolean);
 
-        const refs = extractSegmentRefs(pricePoint);
-        if (!refs.length) continue;
-
-        const segments = refs
-          .map((r) => segmentMap[r.Key])
-          .filter(Boolean);
-
-        if (!segments.length) continue;
-
-        const durationMinutes = minutesBetween(
-          segments[0].departure,
-          segments[segments.length - 1].arrival
-        );
-
-        const uniqueKey = segments
-          .map((s) => `${s.carrier}${s.flightNumber}${s.from}${s.to}`)
-          .join("-");
-
-        flightsArray.push({
-          id: Buffer.from(uniqueKey + Date.now()).toString("base64"),
-          price,
-          currency,
-          stops: segments.length - 1,
-          durationMinutes,
-          segments,
-          cabinClass: segments[0]?.cabinClass || "Economy",
-          refundable: pricingInfo.Refundable === "true",
-          fareCalc: pricingInfo["air:FareCalc"] || "",
-          pricingKey: pricePoint.Key,
-          segmentKeys: refs.map((r) => r.Key),
-        });
-      }
-
-      return flightsArray;
+      return flights.sort((a, b) => a.displayPrice - b.displayPrice);
     };
 
-    /* ======================================================
-     EXECUTION
-    ====================================================== */
+    // ================= 3. EXECUTION =================
+    const flights = await processGdsSearch(builderArgs);
 
-    // ONE-WAY
-    if (tripType === "oneway") {
-      const flights = await runSingleSearch(
-        from.toUpperCase(),
-        to.toUpperCase(),
-        date
-      );
-
-      return res.json({
-        success: true,
-        tripType: "oneway",
-        flights,
-        totalResults: flights.length,
+    if (!flights) {
+      return res.status(404).json({
+        success: false,
+        tripType,
+        message: "No results or valid response from provider",
       });
     }
 
-    // ROUND-TRIP
-    console.log("Round-trip search initiated...");
-
-    const [outboundFlights, returnFlights] = await Promise.all([
-      runSingleSearch(from.toUpperCase(), to.toUpperCase(), date),
-      runSingleSearch(to.toUpperCase(), from.toUpperCase(), returnDate),
-    ]);
-
     return res.json({
       success: true,
-      tripType: "round",
-      outboundFlights,
-      returnFlights,
-      outboundCount: outboundFlights.length,
-      returnCount: returnFlights.length,
+      tripType,
+      totalResults: flights.length,
+      flights,
+      travelers,
+      travelClass,
+      ...(tripType === "multi" && { segments }),
     });
-
   } catch (err) {
-    console.error("Flight Search Error:", err);
-    return res.status(500).json({
+    console.error("❌ Search error:", err);
+    res.status(500).json({
       error: "Flight search failed",
       message: err.message,
     });
   }
 };
 
-
-/* =========================
-   FLIGHT DETAILS
-   ========================= */
-export const flightDetails = async (req, res) => {
-  const { segments } = req.body;
-
-  if (!segments || !segments.length) {
-    return res.status(400).json({ error: "segments required" });
-  }
-
-  const invalidSegments = segments.filter((s) => !s.Key);
-  if (invalidSegments.length > 0) {
-    console.error("❌ Segments missing Key property:", invalidSegments);
-    return res.status(400).json({
-      error: "All segments must have a Key property",
-    });
-  }
-
-  try {
-    const segmentsXML = segments
-      .map((seg) => {
-        const travelTime = minutesBetween(seg.departure, seg.arrival);
-
-        return `
-        <air:AirSegment
-          Key="${seg.Key}"
-          Group="0"
-          Carrier="${seg.carrier}"
-          FlightNumber="${seg.flightNumber}"
-          Origin="${seg.from}"
-          Destination="${seg.to}"
-          DepartureTime="${seg.departure}"
-          ArrivalTime="${seg.arrival}"
-          TravelTime="${travelTime}"
-          Distance="${seg.distance || 0}"
-          ETicketability="Yes"
-          Equipment="${seg.equipment || "320"}"
-          ChangeOfPlane="false"
-          ParticipantLevel="Secure Sell"
-          LinkAvailability="true"
-          OptionalServicesIndicator="false"
-          AvailabilitySource="P"
-          ProviderCode="${seg.providerCode || "1G"}"
-        />`;
-      })
-      .join("");
-
-    const xmlRequest = `<?xml version="1.0" encoding="UTF-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-                  xmlns:air="http://www.travelport.com/schema/air_v54_0"
-                  xmlns:com="http://www.travelport.com/schema/common_v54_0">
-  <soapenv:Header/>
-  <soapenv:Body>
-    <air:AirPriceReq
-        AuthorizedBy="user"
-        TargetBranch="${process.env.TRAVELPORT_TARGET_BRANCH}"
-        TraceId="NODE-${Date.now()}">
-
-      <com:BillingPointOfSaleInfo OriginApplication="UAPI"/>
-
-      <air:AirItinerary>
-        ${segmentsXML}
-      </air:AirItinerary>
-      <air:AirPricingModifiers FaresIndicator="AllFares">
-        <air:BrandModifiers ModifierType="FareFamilyDisplay"/>
-      </air:AirPricingModifiers>
-      <com:SearchPassenger Key="ADT1" Code="ADT"/>
-
-      <air:AirPricingCommand/>
-
-    </air:AirPriceReq>
-  </soapenv:Body>
-</soapenv:Envelope>`;
-
-    console.log("✅ AirPriceReq XML:\n", xmlRequest);
-    const xmlResponse = await callTravelport(xmlRequest);
-    //fs.writeFileSync("AirPriceRsp.xml", xmlResponse);
-    const parser = new XMLParser({
-      ignoreAttributes: false,
-      attributeNamePrefix: "@_",
-    });
-    const json = parser.parse(xmlResponse);
-
-    const envelope = json["SOAP:Envelope"] || json["soapenv:Envelope"];
-    const body = envelope?.["SOAP:Body"] || envelope?.["soapenv:Body"];
-
-    const fault = body?.["SOAP:Fault"] || body?.["soapenv:Fault"];
-    if (fault) {
-      console.error("❌ Travelport Fault:", JSON.stringify(fault, null, 2));
-      return res.status(500).json({ error: "Travelport fault", fault });
-    }
-
-    const priceRsp = body?.["air:AirPriceRsp"];
-    if (!priceRsp) {
-      console.error("❌ No AirPriceRsp");
-      return res.status(500).json({ error: "No AirPriceRsp in response" });
-    }
-
-    const priceResult = priceRsp["air:AirPriceResult"];
-
-    if (!priceResult) {
-      console.error(
-        "❌ No AirPriceResult. Available keys:",
-        Object.keys(priceRsp)
-      );
-      return res.status(500).json({
-        error: "No price result",
-        availableKeys: Object.keys(priceRsp),
-      });
-    }
-
-    let pricingSolution = priceResult["air:AirPricingSolution"];
-
-    if (!pricingSolution) {
-      console.error("❌ No AirPricingSolution in result");
-      return res.status(500).json({ error: "No pricing solution" });
-    }
-
-    if (Array.isArray(pricingSolution)) {
-      pricingSolution = pricingSolution[0];
-    }
-
-    let pricingInfo = pricingSolution["air:AirPricingInfo"];
-
-    if (!pricingInfo) {
-      console.error("❌ No AirPricingInfo in solution");
-      return res.status(500).json({ error: "No pricing info" });
-    }
-
-    if (Array.isArray(pricingInfo)) {
-      pricingInfo = pricingInfo[0];
-    }
-
-    const pricingKey = pricingInfo["@_Key"] || pricingInfo.Key;
-
-    if (!pricingKey) {
-      console.error("❌ No pricing key found");
-      return res.status(500).json({ error: "No pricing key" });
-    }
-
-    // ✅ FIX: Extract segment keys from the ITINERARY in the response
-    const itinerary = priceRsp["air:AirItinerary"];
-    let responseSegments = itinerary?.["air:AirSegment"];
-
-    if (!responseSegments) {
-      console.error("❌ No segments in itinerary");
-      return res.status(500).json({ error: "No segments in itinerary" });
-    }
-
-    // Handle single or multiple segments
-    if (!Array.isArray(responseSegments)) {
-      responseSegments = [responseSegments];
-    }
-
-    // ✅ Extract the segment keys from the RESPONSE, not the request
-    const segmentKeys = responseSegments
-      .map((seg) => seg["@_Key"] || seg.Key)
-      .filter(Boolean);
-
-    console.log("✅ Pricing successful:", {
-      pricingKey,
-      segmentKeys,
-      totalPrice: pricingSolution["@_TotalPrice"],
-    });
-
-    res.json({
-      success: true,
-      pricing: pricingInfo,
-      pricingSolution: pricingSolution,
-      pricingKey,
-      passengerKey: "ADT1",
-      segmentKeys, // ✅ These are now from the pricing response
-      itinerary,
-    });
-  } catch (err) {
-    console.error("❌ Pricing Error:", err);
-    console.error("Stack:", err.stack);
-    res.status(500).json({
-      error: "Pricing failed",
-      message: err.message,
-    });
-  }
-};
-
-// export const optionalServices = async (req, res) => {
-//   const { pricingKey, passengerKey, segmentKeys } = req.body;
-
-//   if (!pricingKey || !passengerKey || !segmentKeys?.length) {
-//     return res.status(400).json({ error: "Missing required refs" });
-//   }
-
-//   const segmentRefsXML = segmentKeys
-//     .map((k) => `<air:AirSegmentRef Key="${k}"/>`)
-//     .join("");
-
-//   const xmlRequest = `
-// <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-//                   xmlns:air="http://www.travelport.com/schema/air_v54_0"
-//                   xmlns:com="http://www.travelport.com/schema/common_v54_0">
-//   <soapenv:Body>
-//     <air:OptionalServicesReq
-//         AuthorizedBy="user"
-//         TargetBranch="${process.env.TRAVELPORT_TARGET_BRANCH}"
-//         TraceId="NODE-ANC-${Date.now()}">
-
-//       <com:BillingPointOfSaleInfo OriginApplication="UAPI"/>
-
-//       <air:AirPricingInfoRef Key="${pricingKey}"/>
-
-//       <air:SearchPassengerRef Key="${passengerKey}"/>
-
-//       ${segmentRefsXML}
-
-//     </air:OptionalServicesReq>
-//   </soapenv:Body>
-// </soapenv:Envelope>`;
-
-//   const xmlResponse = await callTravelport(xmlRequest);
-
-//   const parser = new XMLParser({ ignoreAttributes: false });
-//   const json = parser.parse(xmlResponse);
-
-//   const fault = json?.["SOAP:Envelope"]?.["SOAP:Body"]?.["SOAP:Fault"];
-//   if (fault) return res.status(500).json(fault);
-
-//   res.json({
-//     success: true,
-//     optionalServices:
-//       json["SOAP:Envelope"]["SOAP:Body"]["air:OptionalServicesRsp"],
-//   });
-// };
-// export const optionalServices = async (req, res) => {
-//   console.log("📦 Ancillaries Request:", req.body);
-
-//   const { pricingKey, passengerKey, segmentKeys } = req.body;
-
-//   if (!pricingKey || !passengerKey || !segmentKeys?.length) {
-//     console.error("❌ Missing required fields");
-//     return res.status(400).json({ error: "Missing required refs" });
-//   }
-
-//   try {
-//     const segmentRefsXML = segmentKeys
-//       .map((k) => `<air:AirSegmentRef Key="${k}"/>`)
-//       .join("");
-
-//     const xmlRequest = `<?xml version="1.0" encoding="UTF-8"?>
-// <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-//                   xmlns:air="http://www.travelport.com/schema/air_v54_0"
-//                   xmlns:com="http://www.travelport.com/schema/common_v54_0">
-//   <soapenv:Body>
-//     <air:OptionalServicesReq
-//         AuthorizedBy="user"
-//         TargetBranch="${process.env.TRAVELPORT_TARGET_BRANCH}"
-//         TraceId="NODE-ANC-${Date.now()}">
-
-//       <com:BillingPointOfSaleInfo OriginApplication="UAPI"/>
-//       <air:AirPricingInfoRef Key="${pricingKey}"/>
-//       <air:SearchPassengerRef Key="${passengerKey}"/>
-//       ${segmentRefsXML}
-
-//     </air:OptionalServicesReq>
-//   </soapenv:Body>
-// </soapenv:Envelope>`;
-
-//     console.log("✅ Sending OptionalServicesReq...");
-
-//     const xmlResponse = await callTravelport(xmlRequest);
-
-//     const parser = new XMLParser({
-//       ignoreAttributes: false,
-//       attributeNamePrefix: "@_",
-//     });
-//     const json = parser.parse(xmlResponse);
-
-//     const envelope = json["SOAP:Envelope"] || json["soapenv:Envelope"];
-//     const body = envelope?.["SOAP:Body"] || envelope?.["soapenv:Body"];
-
-//     const fault = body?.["SOAP:Fault"] || body?.["soapenv:Fault"];
-//     if (fault) {
-//       console.error("❌ Travelport Fault:", JSON.stringify(fault, null, 2));
-
-//       // Return gracefully instead of 500
-//       return res.json({
-//         success: true,
-//         optionalServices: null,
-//         message: "Ancillary services not available for this flight",
-//       });
-//     }
-
-//     const optServicesRsp = body?.["air:OptionalServicesRsp"];
-
-//     res.json({
-//       success: true,
-//       optionalServices: optServicesRsp,
-//     });
-//   } catch (err) {
-//     console.error("❌ Ancillaries Error:", err.message);
-//     console.error("Stack:", err.stack);
-
-//     // ✅ Return gracefully instead of crashing
-//     return res.json({
-//       success: true,
-//       optionalServices: null,
-//       message: "Ancillary services temporarily unavailable",
-//     });
-//   }
-// };
 export const validatePassengers = async (req, res) => {
   const { passengers } = req.body;
 
@@ -585,254 +222,3 @@ export const validateContactInfo = async (req, res) => {
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
-
-// export const createReservation = async (req, res) => {
-//   try {
-//     const {
-//       pricingSolution,
-//       itinerary,
-//       passengers,
-//       contactInfo,
-//       formOfPayment,
-//     } = req.body;
-
-//     if (!pricingSolution)
-//       return res.status(400).json({ error: "Pricing solution required" });
-//     if (!passengers || !passengers.length)
-//       return res.status(400).json({ error: "Passengers required" });
-//     if (!contactInfo?.email || !contactInfo?.phone)
-//       return res.status(400).json({ error: "Contact info required" });
-
-//     // ✅ BookingTraveler XML
-//     const bookingTravelersXML = passengers
-//       .map((pax, idx) => {
-//         const key = `PAX${idx + 1}`;
-//         return `<com:BookingTraveler Key="${key}" TravelerType="${
-//           pax.type
-//         }" Gender="${pax.gender}"${pax.dob ? ` DOB="${pax.dob}"` : ""}>
-//   <com:BookingTravelerName${
-//     pax.prefix ? ` Prefix="${pax.prefix}"` : ""
-//   } First="${pax.firstName}" Last="${pax.lastName}"/>
-//   <com:PhoneNumber Type="Mobile" CountryCode="${
-//     pax.phoneCountryCode || contactInfo.phoneCountryCode
-//   }" Number="${pax.phone || contactInfo.phone}"/>
-//   <com:Email EmailID="${pax.email || contactInfo.email}"/>
-// </com:BookingTraveler>`;
-//       })
-//       .join("\n");
-
-//     // ✅ AirPricingSolution XML
-//     const airPricingSolutionXML = buildAirPricingSolutionXML(
-//       pricingSolution,
-//       itinerary,
-//       passengers
-//     );
-
-//     // ✅ Get total price - use TotalPrice from pricingSolution, not BasePrice
-//     const totalPrice =
-//       pricingSolution?.["@_TotalPrice"] || pricingSolution?.TotalPrice;
-
-//     if (!totalPrice) {
-//       return res
-//         .status(400)
-//         .json({ error: "Total price not found in pricing solution" });
-//     }
-
-//     // Extract numeric amount (remove currency code)
-//     const paymentAmount = totalPrice.replace(/[A-Z]/g, "");
-//     const paymentKey = `PAY${Date.now()}`;
-
-//     // ✅ FormOfPayment XML
-//     const formOfPaymentXML = formOfPayment?.cardNumber
-//       ? `<com:FormOfPayment Key="${paymentKey}" Type="Credit">
-//   <com:CreditCard Type="${formOfPayment.cardType}" Number="${formOfPayment.cardNumber}" ExpDate="${formOfPayment.expDate}" Name="${formOfPayment.cardHolderName}"/>
-// </com:FormOfPayment>`
-//       : `<com:FormOfPayment Key="${paymentKey}" Type="Cash"/>`;
-
-//     // ✅ Ticketing date - 7 days from now
-//     const ticketDate = new Date();
-//     ticketDate.setDate(ticketDate.getDate() + 7);
-
-//     // ✅ Final XML request
-//     const xmlRequest = `<?xml version="1.0" encoding="UTF-8"?>
-// <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-//                   xmlns:univ="http://www.travelport.com/schema/universal_v54_0"
-//                   xmlns:air="http://www.travelport.com/schema/air_v54_0"
-//                   xmlns:com="http://www.travelport.com/schema/common_v54_0">
-//   <soapenv:Header/>
-//   <soapenv:Body>
-//     <univ:AirCreateReservationReq TraceId="PNR-${Date.now()}" TargetBranch="${
-//       process.env.TRAVELPORT_TARGET_BRANCH
-//     }" AuthorizedBy="user" RetainReservation="Both">
-//       <com:BillingPointOfSaleInfo OriginApplication="UAPI"/>
-//       ${bookingTravelersXML}
-//       ${formOfPaymentXML}
-//       ${airPricingSolutionXML}
-//       <com:ActionStatus Type="ACTIVE" ProviderCode="1G"/>
-
-//     </univ:AirCreateReservationReq>
-//   </soapenv:Body>
-// </soapenv:Envelope>`;
-
-//     console.log("🎫 AirCreateReservationReq XML:\n", xmlRequest);
-
-//     const xmlResponse = await callTravelport(xmlRequest);
-//     fs.writeFileSync("AirCreateReservationRsp.xml", xmlResponse);
-
-//     const parser = new XMLParser({
-//       ignoreAttributes: false,
-//       attributeNamePrefix: "@_",
-//     });
-//     const json = parser.parse(xmlResponse);
-//     const body =
-//       json["SOAP:Envelope"]?.["SOAP:Body"] ||
-//       json["soapenv:Envelope"]?.["soapenv:Body"];
-//     const fault = body?.["SOAP:Fault"];
-//     if (fault) return res.status(500).json({ fault });
-
-//     const rsp = body["univ:AirCreateReservationRsp"];
-//     const record = rsp?.["univ:UniversalRecord"];
-//     const locator = record?.["@_LocatorCode"];
-//     if (!locator) return res.status(500).json({ error: "PNR not returned" });
-
-//     return res.json({ success: true, pnr: locator, record });
-//   } catch (err) {
-//     console.error("❌ PNR Creation Error:", err);
-//     return res.status(500).json({ error: err.message });
-//   }
-// };
-
-// function buildAirPricingSolutionXML(pricingSolution, itinerary, passengers) {
-//   if (!pricingSolution) return "";
-
-//   const solutionKey = pricingSolution["@_Key"] || pricingSolution.Key;
-//   if (!solutionKey) {
-//     console.warn("⚠️ No Key found in AirPricingSolution");
-//     return "";
-//   }
-
-//   // ✅ Extract air segments from pricing solution
-//   const airSegments = extractSegments(itinerary);
-
-//   return `
-// <air:AirPricingSolution Key="${solutionKey}" PricingMethod="Auto">
-//   ${airSegments}
-//   ${buildAirPricingInfoXML(pricingSolution, passengers)}
-// </air:AirPricingSolution>`;
-// }
-
-// // ✅ New function to extract segments
-// function extractSegments(itinerary) {
-//   // Look for segments in the pricing solution
-//   const segments = itinerary?.["air:AirSegment"];
-
-//   if (!segments) {
-//     console.warn("⚠️ No AirSegment found in pricing solution");
-//     return "";
-//   }
-
-//   const segmentArray = Array.isArray(segments) ? segments : [segments];
-
-//   return segmentArray
-//     .map((seg) => {
-//       return `<air:AirSegment
-//       Key="${seg["@_Key"]}"
-//       Group="${seg["@_Group"] || "0"}"
-//       Carrier="${seg["@_Carrier"]}"
-//       FlightNumber="${seg["@_FlightNumber"]}"
-//       Origin="${seg["@_Origin"]}"
-//       Destination="${seg["@_Destination"]}"
-//       DepartureTime="${seg["@_DepartureTime"]}"
-//       ArrivalTime="${seg["@_ArrivalTime"]}"
-//       FlightTime="${seg["@_FlightTime"]}"
-//       Distance="${seg["@_Distance"] || ""}"
-//       ProviderCode="${seg["@_ProviderCode"] || "1G"}"
-//       ClassOfService="${seg["@_ClassOfService"] || ""}"/>`;
-//     })
-//     .join("\n");
-// }
-
-// function buildAirPricingInfoXML(pricingSolution, passengers) {
-//   const airPricingInfo = pricingSolution["air:AirPricingInfo"];
-//   if (!airPricingInfo) return "";
-
-//   const pricingInfos = Array.isArray(airPricingInfo)
-//     ? airPricingInfo
-//     : [airPricingInfo];
-
-//   return pricingInfos
-//     .map((info) => {
-//       const passengerType = info["air:PassengerType"];
-//       const paxCode = passengerType?.["@_Code"];
-
-//       if (!paxCode) {
-//         throw new Error("PassengerTypeCode missing from pricing response");
-//       }
-
-//       // ✅ Extract FareInfo
-//       const fareInfos = info["air:FareInfo"];
-//       const fareInfoArray = Array.isArray(fareInfos)
-//         ? fareInfos
-//         : fareInfos
-//         ? [fareInfos]
-//         : [];
-
-//       // ✅ Build FareInfo XML
-//       const fareInfoXML = fareInfoArray
-//         .map((fi) => {
-//           return `<air:FareInfo
-//       Key="${fi["@_Key"]}"
-//       FareBasis="${fi["@_FareBasis"]}"
-//       PassengerTypeCode="${fi["@_PassengerTypeCode"]}"
-//       Origin="${fi["@_Origin"]}"
-//       Destination="${fi["@_Destination"]}"
-//       EffectiveDate="${fi["@_EffectiveDate"]}"
-//       DepartureDate="${fi["@_DepartureDate"] || fi["@_EffectiveDate"]}"
-//       Amount="${fi["@_Amount"] || "0"}"/>`;
-//         })
-//         .join("\n    ");
-
-//       // ✅ Extract BookingInfo
-//       const bookingInfos = info["air:BookingInfo"];
-
-//       if (!bookingInfos) {
-//         console.error("❌ No BookingInfo found in AirPricingInfo");
-//         throw new Error(
-//           "BookingInfo is required but not found in pricing response"
-//         );
-//       }
-
-//       const bookingInfoArray = Array.isArray(bookingInfos)
-//         ? bookingInfos
-//         : [bookingInfos];
-
-//       // ✅ Build BookingInfo XML
-//       const bookingInfoXML = bookingInfoArray
-//         .map((bi) => {
-//           return `<air:BookingInfo
-//       BookingCode="${bi["@_BookingCode"]}"
-//       CabinClass="${bi["@_CabinClass"] || ""}"
-//       FareInfoRef="${bi["@_FareInfoRef"]}"
-//       SegmentRef="${bi["@_SegmentRef"]}"/>`;
-//         })
-//         .join("\n    ");
-
-//       return `
-// <air:AirPricingInfo
-//     Key="${info["@_Key"]}"
-//     PricingMethod="Auto"
-//     TotalPrice="${info["@_TotalPrice"]}"
-//     Taxes="${info["@_Taxes"]}">
-
-//     ${fareInfoXML}
-
-//     ${bookingInfoXML}
-
-//     <air:PassengerType
-//         Code="${paxCode}"
-//         BookingTravelerRef="PAX1"/>
-
-// </air:AirPricingInfo>`;
-//     })
-//     .join("\n");
-// }

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" 
+                  xmlns:univ="http://www.travelport.com/schema/universal_v52_0" 
+                  xmlns:air="http://www.travelport.com/schema/air_v52_0" 
+                  xmlns:com="http://www.travelport.com/schema/common_v52_0">
+  <soapenv:Body>
+    <univ:AirCreateReservationReq AuthorizedBy="User" TargetBranch="P7219240" RetainReservation="Both">
+      <com:BillingPointOfSaleInfo OriginApplication="uAPI"/>
+            
+    <com:BookingTraveler Key="P1" TravelerType="ADT" Gender="M" DOB="1995-09-09">
+      <com:BookingTravelerName First="WALID" Last="ALI" />
+      <com:PhoneNumber Number="3379849523" />
+      <com:Email EmailID="shehzadwalid@gmail.com" />
+    </com:BookingTraveler>
+            
+
+      <com:FormOfPayment Type="Cash"/>
+      <air:AirPricingSolution Key="0JtPzuTqWDKAvO4yBAAAAA==">
+        
+    <air:AirSegment
+      Key="0JtPzuTqWDKAtO4yBAAAAA=="
+      Group="0"
+      Carrier="PK"
+      FlightNumber="233"
+      Origin="ISB"
+      Destination="DXB"
+      DepartureTime="2026-01-21T23:50:00"
+      ArrivalTime="2026-01-22T02:45:00"
+      ProviderCode="1G"
+    />
+        <air:AirPricingInfo Key="0JtPzuTqWDKAxO4yBAAAAA==" PlatingCarrier="PK" PricingMethod="Auto">
+            
+    <air:FareInfo 
+      Key="0JtPzuTqWDKA3O4yBAAAAA==" 
+      FareBasis="VLOWPK" 
+      PassengerTypeCode="ADT" 
+      Origin="ISB" 
+      Destination="DXB" 
+      EffectiveDate="2026-01-14" 
+    />
+            
+    <air:BookingInfo 
+      BookingCode="V" 
+      BookingCount="1" 
+      CabinClass="Economy" 
+      FareInfoRef="0JtPzuTqWDKA3O4yBAAAAA==" 
+      SegmentRef="0JtPzuTqWDKAtO4yBAAAAA==" 
+    />
+            <air:PassengerType Code="ADT" />
+        </air:AirPricingInfo>
+        <com:HostToken>GFB10101ADT00  01VLOWPK                                010001#GFB200010101NADTV303345100510000199UK#GFMCXOX33 N4510 PK ADTVLOWPK</com:HostToken>
+      </air:AirPricingSolution>
+      <com:ActionStatus Type="TAW" TicketDate="2026-01-15T10:24:16" ProviderCode="1G"/>
+    </univ:AirCreateReservationReq>
+  </soapenv:Body>
+</soapenv:Envelope>

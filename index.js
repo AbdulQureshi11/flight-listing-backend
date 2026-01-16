@@ -21,6 +21,8 @@ app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
 
+console.log("user", process.env.EMAIL_USER);
+
 app.use("/api", flightrouter);
 app.use("/api", bookingrouter);
 app.use("/api", adminrouter);
@@ -33,5 +35,7 @@ app.listen(port, () => {
     USERNAME: process.env.TRAVELPORT_USERNAME ? "✅ loaded" : "❌ missing",
     PASSWORD: process.env.TRAVELPORT_PASSWORD ? "✅ loaded" : "❌ missing",
     ENDPOINT: process.env.TRAVELPORT_ENDPOINT,
+    USERNAME: process.env.EMAIL_USER,
+    EMAIL_PASSWORD: process.env.EMAIL_PASSWORD,
   });
 });
