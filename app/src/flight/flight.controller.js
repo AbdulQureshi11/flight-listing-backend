@@ -93,7 +93,13 @@ export const searchFlights = async (req, res) => {
 
       const flights = pricePoints
         .map((pp) =>
-          processPricePoint(pp, segmentMap, fareInfoMap, amenitiesMap, brandMap)
+          processPricePoint(
+            pp,
+            segmentMap,
+            fareInfoMap,
+            amenitiesMap,
+            brandMap,
+          ),
         )
         .filter(Boolean);
 
@@ -129,9 +135,20 @@ export const searchFlights = async (req, res) => {
   }
 };
 
+const calculateAge = (dob) => {
+  const today = new Date();
+  const birthDate = new Date(dob);
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const m = today.getMonth() - birthDate.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+    age--;
+  }
+  return age;
+};
+
 export const validatePassengers = async (req, res) => {
   const { passengers } = req.body;
-
+  debugger;
   if (!Array.isArray(passengers) || passengers.length === 0) {
     return res.status(400).json({
       success: false,
@@ -141,30 +158,41 @@ export const validatePassengers = async (req, res) => {
 
   const errors = [];
 
+  // 1. Infant to Adult Ratio Check
   const adults = passengers.filter((p) => p.type === "ADT").length;
   const infants = passengers.filter((p) => p.type === "INF").length;
 
   if (infants > adults) {
-    errors.push(
-      "Each infant must be associated with one adult (1 infant per adult allowed)"
-    );
+    errors.push("Each infant must be associated with at least one adult.");
   }
 
+  // 2. Individual Passenger Validation
   passengers.forEach((pax, idx) => {
-    if (!pax.firstName)
-      errors.push(`Passenger ${idx + 1}: first name required`);
-    if (!pax.lastName) errors.push(`Passenger ${idx + 1}: last name required`);
-    if (!["M", "F"].includes(pax.gender))
-      errors.push(`Passenger ${idx + 1}: valid gender required`);
-    if (!["ADT", "CNN", "INF"].includes(pax.type))
-      errors.push(`Passenger ${idx + 1}: valid passenger type required`);
-    if (!pax.dob) errors.push(`Passenger ${idx + 1}: date of birth required`);
+    const pNum = idx + 1;
+
+    // Existing Field Checks
+    if (!pax.firstName) errors.push(`Passenger ${pNum}: first name required`);
+    if (!pax.lastName) errors.push(`Passenger ${pNum}: last name required`);
+    if (!pax.dob) errors.push(`Passenger ${pNum}: date of birth required`);
     if (!pax.passportNumber)
-      errors.push(`Passenger ${idx + 1}: passport number required`);
-    if (!pax.passportExpiry)
-      errors.push(`Passenger ${idx + 1}: passport expiry required`);
+      errors.push(`Passenger ${pNum}: passport number required`);
     if (!pax.nationality)
-      errors.push(`Passenger ${idx + 1}: nationality required`);
+      errors.push(`Passenger ${pNum}: nationality required`);
+
+    // --- NEW: Age Validation Logic ---
+    if (pax.dob) {
+      const age = calculateAge(pax.dob);
+
+      if (pax.type === "ADT" && age < 12) {
+        errors.push(`Passenger ${pNum}: Must be an Adult)`);
+      } else if (pax.type === "CNN" && (age < 2 || age >= 12)) {
+        errors.push(`Passenger ${pNum}: Must be a Child)`);
+      } else if (pax.type === "INF" && age >= 2) {
+        errors.push(
+          `Passenger ${pNum}: Must be under 2 years old to be an Infant)`,
+        );
+      }
+    }
   });
 
   if (errors.length) {
@@ -180,13 +208,6 @@ export const validatePassengers = async (req, res) => {
     passengers,
   });
 };
-
-function isValidDate(dateString) {
-  const regex = /^\d{4}-\d{2}-\d{2}$/;
-  if (!dateString.match(regex)) return false;
-  const date = new Date(dateString);
-  return date instanceof Date && !isNaN(date);
-}
 
 export const validateContactInfo = async (req, res) => {
   const { email, phone, phoneCountryCode } = req.body;
