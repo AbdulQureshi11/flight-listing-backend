@@ -7,71 +7,53 @@
     <univ:AirCreateReservationReq AuthorizedBy="User" TargetBranch="P7219240" RetainReservation="Both">
       <com:BillingPointOfSaleInfo OriginApplication="uAPI"/>
       
-    <com:BookingTraveler Key="P1" TravelerType="ADT" Gender="M" DOB="1995-09-09">
-      <com:BookingTravelerName First="WALID" Last="SHEHZAD" />
-      <com:PhoneNumber Number="3379849523" />
-      <com:Email EmailID="shehzadwalid@gmail.com" />
-    </com:BookingTraveler>
-    <com:BookingTraveler Key="P2" TravelerType="ADT" Gender="M" DOB="2000-09-09">
-      <com:BookingTravelerName First="HASEEB" Last="JAN" />
-      <com:PhoneNumber Number="3379849523" />
-      <com:Email EmailID="shehzadwalid@gmail.com" />
-    </com:BookingTraveler>
-    <com:BookingTraveler Key="P3" TravelerType="CNN" Gender="M" DOB="2001-09-09">
-      <com:BookingTravelerName First="MOEN" Last="AKHTAR" />
-      <com:PhoneNumber Number="3379849523" />
-      <com:Email EmailID="shehzadwalid@gmail.com" />
+    <com:BookingTraveler Key="P1" TravelerType="ADT" Gender="M" DOB="2001-12-11">
+      <com:BookingTravelerName First="ABDUL MOIN" Last="QURESHI" />
+      <com:PhoneNumber Number="33594543534" />
+      <com:Email EmailID="abdulmoinqur9707@gmail.com" />
     </com:BookingTraveler>
       <com:FormOfPayment Type="Cash"/>
-      <air:AirPricingSolution Key="roxo9uSqWDKAebhiBAAAAA==">
+      <air:AirPricingSolution Key="J9/lHwTqWDKAvJOIDAAAAA==">
         
     <air:AirSegment
-      Key="roxo9uSqWDKAcbhiBAAAAA=="
+      Key="J9/lHwTqWDKAtJOIDAAAAA=="
       Group="0"
-      Carrier="PK"
-      FlightNumber="233"
+      Carrier="FZ"
+      FlightNumber="354"
       Origin="ISB"
       Destination="DXB"
-      DepartureTime="2026-05-01T00:55:00"
-      ArrivalTime="2026-05-01T03:45:00"
+      DepartureTime="2026-02-17T12:00:00"
+      ArrivalTime="2026-02-17T14:40:00"
       ProviderCode="1G"
     />
-        <air:AirPricingInfo Key="roxo9uSqWDKAhbhiBAAAAA==" PlatingCarrier="PK" PricingMethod="Auto">
+        <air:AirPricingInfo Key="J9/lHwTqWDKAxJOIDAAAAA==" PlatingCarrier="FZ" PricingMethod="Auto">
           
     <air:FareInfo 
-      Key="roxo9uSqWDKAnbhiBAAAAA==" 
-      FareBasis="VLOWPK" 
+      Key="J9/lHwTqWDKA3JOIDAAAAA==" 
+      FareBasis="BOL7PK1" 
       PassengerTypeCode="ADT" 
       Origin="ISB" 
       Destination="DXB" 
-      EffectiveDate="2026-01-16" 
+      EffectiveDate="2026-02-02" 
     />
           
     <air:BookingInfo 
-      BookingCode="V" 
-      BookingCount="3" 
+      BookingCode="B" 
+      BookingCount="1" 
       CabinClass="Economy" 
-      FareInfoRef="roxo9uSqWDKAnbhiBAAAAA==" 
-      SegmentRef="roxo9uSqWDKAcbhiBAAAAA==" 
+      FareInfoRef="J9/lHwTqWDKA3JOIDAAAAA==" 
+      SegmentRef="J9/lHwTqWDKAtJOIDAAAAA==" 
     />
           
     <air:PassengerType 
       Code="ADT" 
       BookingTravelerRef="P1" 
     />
-    <air:PassengerType 
-      Code="ADT" 
-      BookingTravelerRef="P2" 
-    />
-    <air:PassengerType 
-      Code="CNN" 
-      BookingTravelerRef="P3" 
-    />
           
         </air:AirPricingInfo>
-        <com:HostToken>GFB10101ADT01OW01VLOWPK                                010001#GFB200010101NADTV303345100510000199UK#GFMCXOX33 N4510 PK ADTVLOWPK</com:HostToken><com:HostToken>GFB10202CNN01OW01VLOWPK                                010001#GFB200020201NADTV303345100510000199UK#GFMCXOX33 N4510 PK ADTVLOWPK</com:HostToken>
+        <com:HostToken>GFB10101ADT01OW01BOL7PK1                               010001#GFB200010101NADTV303301PK0010000999#GFMCXOX33 N01PK FZ ADTBOL7PK1</com:HostToken>
       </air:AirPricingSolution>
-      <com:ActionStatus Type="TAW" TicketDate="2026-01-17T11:26:39" ProviderCode="1G"/>
+      <com:ActionStatus Type="TAW" TicketDate="2026-02-03T09:35:49" ProviderCode="1G"/>
     </univ:AirCreateReservationReq>
   </soapenv:Body>
 </soapenv:Envelope>

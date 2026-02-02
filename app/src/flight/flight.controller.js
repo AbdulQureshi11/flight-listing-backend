@@ -1,5 +1,7 @@
-import { XMLParser } from "fast-xml-parser";
+
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { buildLowFareSearchXML } from "./lowFareXml.js";
 import { callTravelport } from "./travelport.service.js";
 import {
@@ -10,6 +12,9 @@ import {
   extractBrands,
   processPricePoint,
 } from "../utils/ParseHelper.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export const searchFlights = async (req, res) => {
   try {
@@ -135,6 +140,11 @@ export const searchFlights = async (req, res) => {
   }
 };
 
+
+
+
+
+
 const calculateAge = (dob) => {
   const today = new Date();
   const birthDate = new Date(dob);
@@ -243,3 +253,94 @@ export const validateContactInfo = async (req, res) => {
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
+
+// ====================== AIRPORT AUTOCOMPLETE ======================
+let AIRPORTS_CACHE = null;
+
+const AIRPORTS_PATH = path.resolve(__dirname, "../data/airports.json");
+// ✅ because file is in: app/src/data/airports.json
+// and this controller is in: app/src/flight/flight.controller.js
+// so ../data/airports.json is correct
+
+const loadAirports = () => {
+  if (AIRPORTS_CACHE) return AIRPORTS_CACHE;
+
+  console.log("✅ Loading airports from:", AIRPORTS_PATH);
+
+  const raw = fs.readFileSync(AIRPORTS_PATH, "utf-8");
+  const airports = JSON.parse(raw);
+
+  AIRPORTS_CACHE = airports
+    .map((a) => ({
+      name: a.name || a.airport || a.airportName || "",
+      city: a.city || "",
+      country: a.country || "",
+      iata: (a.iata || a.IATA || "").toUpperCase(),
+      icao: (a.icao || a.ICAO || "").toUpperCase(),
+      lat: a.lat ?? a.latitude ?? null,
+      lon: a.lon ?? a.longitude ?? null,
+      timezone: a.timezone || a.tz || "",
+    }))
+    .filter((x) => x.name || x.city || x.iata || x.icao);
+
+  return AIRPORTS_CACHE;
+};
+
+export const searchAirports = (req, res) => {
+  try {
+    const q = (req.query.q || "").trim();
+    const limit = Math.min(Number(req.query.limit || 10), 20);
+
+    if (!q) return res.json([]);
+
+    const airports = loadAirports();
+    const query = q.toLowerCase();
+
+    const results = airports
+      .map((a) => {
+        const name = (a.name || "").toLowerCase();
+        const city = (a.city || "").toLowerCase();
+        const country = (a.country || "").toLowerCase();
+        const iata = (a.iata || "").toLowerCase();
+        const icao = (a.icao || "").toLowerCase();
+
+        let score = 0;
+
+        if (iata === query) score += 100;
+        if (icao === query) score += 95;
+
+        if (iata.startsWith(query)) score += 60;
+        if (icao.startsWith(query)) score += 55;
+        if (city.startsWith(query)) score += 40;
+        if (name.startsWith(query)) score += 35;
+
+        if (city.includes(query)) score += 20;
+        if (name.includes(query)) score += 18;
+        if (country.includes(query)) score += 10;
+
+        return { a, score };
+      })
+      .filter((x) => x.score > 0)
+      .sort((x, y) => y.score - x.score)
+      .slice(0, limit)
+      .map(({ a }) => ({
+        label: `${a.city || a.name} - ${a.name}${a.iata ? ` (${a.iata})` : ""}`,
+        name: a.name,
+        city: a.city,
+        country: a.country,
+        iata: a.iata,
+        icao: a.icao,
+        lat: a.lat,
+        lon: a.lon,
+        timezone: a.timezone,
+      }));
+
+    return res.json(results);
+  } catch (err) {
+    console.log("❌ Airport search failed:", err.message);
+    return res.status(500).json({
+      message: "Airport search failed",
+      error: err.message,
+    });
+  }
+};
