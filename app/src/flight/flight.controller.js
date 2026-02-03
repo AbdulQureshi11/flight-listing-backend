@@ -258,9 +258,7 @@ function isValidEmail(email) {
 let AIRPORTS_CACHE = null;
 
 const AIRPORTS_PATH = path.resolve(__dirname, "../data/airports.json");
-// ✅ because file is in: app/src/data/airports.json
-// and this controller is in: app/src/flight/flight.controller.js
-// so ../data/airports.json is correct
+// file: app/src/data/airports.json
 
 const loadAirports = () => {
   if (AIRPORTS_CACHE) return AIRPORTS_CACHE;
@@ -268,33 +266,38 @@ const loadAirports = () => {
   console.log("✅ Loading airports from:", AIRPORTS_PATH);
 
   const raw = fs.readFileSync(AIRPORTS_PATH, "utf-8");
-  const airports = JSON.parse(raw);
+  const data = JSON.parse(raw);
 
-  AIRPORTS_CACHE = airports
+  // 🔥 mwgg/Airports JSON is OBJECT, not ARRAY
+  const airportsArray = Array.isArray(data) ? data : Object.values(data);
+
+  AIRPORTS_CACHE = airportsArray
     .map((a) => ({
-      name: a.name || a.airport || a.airportName || "",
-      city: a.city || "",
-      country: a.country || "",
-      iata: (a.iata || a.IATA || "").toUpperCase(),
-      icao: (a.icao || a.ICAO || "").toUpperCase(),
+      name: a.name || "",
+      city: a.city || a.municipality || "",
+      country: a.country || a.country_name || "",
+      iata: (a.iata || "").toUpperCase(),
+      icao: (a.icao || "").toUpperCase(),
       lat: a.lat ?? a.latitude ?? null,
       lon: a.lon ?? a.longitude ?? null,
-      timezone: a.timezone || a.tz || "",
+      timezone: a.tz || a.timezone || "",
     }))
-    .filter((x) => x.name || x.city || x.iata || x.icao);
+    // keep only useful entries
+    .filter((x) => x.name && (x.city || x.iata || x.icao));
+
+  console.log(`✅ Airports loaded: ${AIRPORTS_CACHE.length}`);
 
   return AIRPORTS_CACHE;
 };
 
 export const searchAirports = (req, res) => {
   try {
-    const q = (req.query.q || "").trim();
+    const q = (req.query.q || "").trim().toLowerCase();
     const limit = Math.min(Number(req.query.limit || 10), 20);
 
     if (!q) return res.json([]);
 
     const airports = loadAirports();
-    const query = q.toLowerCase();
 
     const results = airports
       .map((a) => {
@@ -306,17 +309,18 @@ export const searchAirports = (req, res) => {
 
         let score = 0;
 
-        if (iata === query) score += 100;
-        if (icao === query) score += 95;
+        // 🔥 priority matching
+        if (iata === q) score += 100;
+        if (icao === q) score += 95;
 
-        if (iata.startsWith(query)) score += 60;
-        if (icao.startsWith(query)) score += 55;
-        if (city.startsWith(query)) score += 40;
-        if (name.startsWith(query)) score += 35;
+        if (iata.startsWith(q)) score += 60;
+        if (icao.startsWith(q)) score += 55;
+        if (city.startsWith(q)) score += 45;
+        if (name.startsWith(q)) score += 40;
 
-        if (city.includes(query)) score += 20;
-        if (name.includes(query)) score += 18;
-        if (country.includes(query)) score += 10;
+        if (city.includes(q)) score += 25;
+        if (name.includes(q)) score += 20;
+        if (country.includes(q)) score += 10;
 
         return { a, score };
       })
